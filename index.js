@@ -66,7 +66,6 @@ discord.on('messageCreate', async (message) => {
   }
 
   if (logged > 0) {
-    await message.react('📊').catch(() => {});
     const total = amounts.reduce((s, n) => s + n, 0);
     console.log(`✅ ${message.author.username}: ${logged} deal(s) — $${total.toLocaleString()}`);
   }
