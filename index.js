@@ -1,8 +1,3 @@
-// ============================================================
-// THE FOUNDATION — Discord Deal Bot (Real Format Handler)
-// Handles all the messy real-world posting formats seen in #daily-sales
-// ============================================================
-
 const { Client, GatewayIntentBits } = require('discord.js');
 const { createClient } = require('@supabase/supabase-js');
 
@@ -36,28 +31,7 @@ function parseAllAmounts(content) {
 }
 
 function looksLikeADeal(content, amounts) {
-  if (amounts.length === 0) return false;
-
-  // Has a $ sign — always a deal
-  if (content.includes('$')) return true;
-
-  const lower = content.toLowerCase();
-
-  // Known carrier names — always a deal
-  const carriers = [
-    'americo','ethos','moo','trans','tranz','aetna','amam',
-    'siwl','giwl','freakos','chubb','iul','rtd','select',
-    'freakohoes','frankos','lincoln','mutual','ap ','siwl'
-  ];
-  if (carriers.some(c => lower.includes(c))) return true;
-
-  // No $ and no carrier — only log if it looks like JUST a number
-  // e.g. "1234" or "1234 " alone, not buried in banter
-  const wordCount = content.trim().split(/\s+/).length;
-  const hasLargeAmount = amounts.some(n => n >= 400);
-  if (hasLargeAmount && wordCount <= 4) return true;
-
-  return false;
+  return amounts.length > 0;
 }
 
 discord.on('ready', () => {
