@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits } = require('discord.js');
+const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { createClient } = require('@supabase/supabase-js');
 
 const discord = new Client({
@@ -20,7 +20,11 @@ const DAILY_LB_CHANNEL_ID   = process.env.DAILY_LB_CHANNEL_ID;
 const WEEKLY_LB_CHANNEL_ID  = process.env.WEEKLY_LB_CHANNEL_ID;
 const MONTHLY_LB_CHANNEL_ID = process.env.MONTHLY_LB_CHANNEL_ID;
 
+// Stores pinned message IDs
 let lbMessageIds = { daily: null, weekly: null, monthly: null };
+
+// Stores current offset for navigation (0 = today, -1 = yesterday, etc.)
+let lbOffsets = { daily: 0, weekly: 0, monthly: 0 };
 
 // ============================================================
 // DEAL SIGNALS
@@ -85,46 +89,59 @@ function valid(n) {
 }
 
 // ============================================================
-// DATE HELPERS — week starts Sunday
+// DATE HELPERS
 // ============================================================
-function getDateRange(period) {
+function getDateRange(period, offset = 0) {
   const now = new Date();
+
   if (period === 'daily') {
     const start = new Date(now);
+    start.setDate(start.getDate() + offset);
     start.setHours(0, 0, 0, 0);
-    return {
-      start,
-      label: `📅 ${now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}`
-    };
+    const end = new Date(start);
+    end.setHours(23, 59, 59, 999);
+    const isToday = offset === 0;
+    const label = isToday
+      ? `📅 Today — ${start.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}`
+      : `📅 ${start.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}`;
+    return { start, end, label, isLive: isToday };
   }
+
   if (period === 'weekly') {
-    const start = new Date(now);
-    start.setDate(start.getDate() - start.getDay()); // Sunday = day 0
+    const refDate = new Date(now);
+    refDate.setDate(refDate.getDate() + (offset * 7));
+    const start = new Date(refDate);
+    start.setDate(start.getDate() - start.getDay()); // Sunday
     start.setHours(0, 0, 0, 0);
-    return {
-      start,
-      label: `📅 Week of ${start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
-    };
+    const end = new Date(start);
+    end.setDate(end.getDate() + 6);
+    end.setHours(23, 59, 59, 999);
+    const isThisWeek = offset === 0;
+    const label = `📅 Week of ${start.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })} – ${end.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}`;
+    return { start, end, label, isLive: isThisWeek };
   }
+
   if (period === 'monthly') {
-    const start = new Date(now.getFullYear(), now.getMonth(), 1);
-    return {
-      start,
-      label: `📅 ${now.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}`
-    };
+    const refDate = new Date(now.getFullYear(), now.getMonth() + offset, 1);
+    const start = new Date(refDate.getFullYear(), refDate.getMonth(), 1);
+    const end = new Date(refDate.getFullYear(), refDate.getMonth() + 1, 0, 23, 59, 59, 999);
+    const isThisMonth = offset === 0;
+    const label = `📅 ${start.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}`;
+    return { start, end, label, isLive: isThisMonth };
   }
 }
 
 // ============================================================
-// BUILD LEADERBOARD MESSAGE
+// BUILD LEADERBOARD CONTENT
 // ============================================================
-async function buildLeaderboard(period) {
-  const { start, label } = getDateRange(period);
+async function buildLeaderboard(period, offset = 0) {
+  const { start, end, label, isLive } = getDateRange(period, offset);
 
   const { data: deals, error } = await supabase
     .from('deals')
     .select('discord_id, amount')
-    .gte('posted_at', start.toISOString());
+    .gte('posted_at', start.toISOString())
+    .lte('posted_at', end.toISOString());
 
   if (error || !deals) return null;
 
@@ -135,10 +152,18 @@ async function buildLeaderboard(period) {
     map[d.discord_id].count++;
   });
 
-  const titles = { daily: 'DAILY', weekly: 'WEEKLY', monthly: 'MONTHLY' };
+  const periodTitle = { daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly' };
+  const liveTag = isLive ? ' 🟢' : '';
 
   if (Object.keys(map).length === 0) {
-    return `🏆 **${titles[period]} LEADERBOARD** — Blueprint × Foundation\n${label}\n\n*No deals posted yet. Get after it!*`;
+    return {
+      content: [
+        `🏆 __**Blueprint Top Producers**__ | ${periodTitle[period]}${liveTag}`,
+        label,
+        ``,
+        `*No deals posted yet — let's get it!* 💪`
+      ].join('\n')
+    };
   }
 
   const ids = Object.keys(map);
@@ -155,33 +180,65 @@ async function buildLeaderboard(period) {
     .sort((a, b) => b.total - a.total)
     .slice(0, 25);
 
-  const totalProduction = sorted.reduce((s, u) => s + u.total, 0);
-  const totalDeals = sorted.reduce((s, u) => s + u.count, 0);
-  const medals = ['🥇', '🥈', '🥉'];
+  const agencyTotal = sorted.reduce((s, u) => s + u.total, 0);
+  const agencyDeals = sorted.reduce((s, u) => s + u.count, 0);
 
-  let msg = `🏆 **${titles[period]} LEADERBOARD** — Blueprint × Foundation\n`;
-  msg += `${label}\n`;
-  msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+  const rankIcon = (i) => {
+    if (i === 0) return '🥇';
+    if (i === 1) return '🥈';
+    if (i === 2) return '🥉';
+    return `${i + 1}.`;
+  };
+
+  let lines = [];
+  lines.push(`🏆 __**Blueprint Top Producers**__ | ${periodTitle[period]}${liveTag}`);
+  lines.push(label);
+  lines.push(`**▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬**`);
 
   sorted.forEach((u, i) => {
-    const medal = medals[i] || `**${i + 1}.**`;
-    const name = u.name.length > 20 ? u.name.slice(0, 20) + '…' : u.name;
+    const name = u.name.length > 22 ? u.name.slice(0, 21) + '…' : u.name;
     const total = `$${Math.round(u.total).toLocaleString()}`;
-    const deals = `(${u.count} deal${u.count !== 1 ? 's' : ''})`;
-    msg += `${medal} ${name.padEnd(22)} ${total.padStart(9)}  ${deals}\n`;
+    const deals = `${u.count} deal${u.count !== 1 ? 's' : ''}`;
+    lines.push(`${rankIcon(i)} **${name}** — ${total} | ${deals}`);
   });
 
-  msg += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
-  msg += `📊 **Agency Total:** $${Math.round(totalProduction).toLocaleString()}  |  **Deals:** ${totalDeals}\n`;
-  msg += `⏱ *Updated: ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}*`;
+  lines.push(`**▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬**`);
+  lines.push(`💰 **Total: $${Math.round(agencyTotal).toLocaleString()}** | ${agencyDeals} deals`);
+  if (isLive) {
+    lines.push(`*Updated ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}*`);
+  }
 
-  return msg;
+  return { content: lines.join('\n') };
+}
+
+// ============================================================
+// BUILD NAV BUTTONS
+// ============================================================
+function buildButtons(period, offset) {
+  const isToday = offset === 0;
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`lb_prev_${period}`)
+      .setLabel('◀ Previous')
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(`lb_live_${period}`)
+      .setLabel('● Live')
+      .setStyle(isToday ? ButtonStyle.Success : ButtonStyle.Secondary)
+      .setDisabled(isToday),
+    new ButtonBuilder()
+      .setCustomId(`lb_next_${period}`)
+      .setLabel('Next ▶')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(isToday), // can't go past today
+  );
+  return row;
 }
 
 // ============================================================
 // POST OR EDIT LEADERBOARD
 // ============================================================
-async function updateLeaderboard(period) {
+async function updateLeaderboard(period, offset = null) {
   const channelIds = {
     daily:   DAILY_LB_CHANNEL_ID,
     weekly:  WEEKLY_LB_CHANNEL_ID,
@@ -190,15 +247,21 @@ async function updateLeaderboard(period) {
   const channelId = channelIds[period];
   if (!channelId) return;
 
+  // Use stored offset if not provided
+  if (offset === null) offset = lbOffsets[period];
+
   try {
     const channel = await discord.channels.fetch(channelId);
-    const content = await buildLeaderboard(period);
-    if (!content) return;
+    const built = await buildLeaderboard(period, offset);
+    if (!built) return;
+
+    const components = [buildButtons(period, offset)];
+    const payload = { content: built.content, components };
 
     if (lbMessageIds[period]) {
       try {
         const msg = await channel.messages.fetch(lbMessageIds[period]);
-        await msg.edit(content);
+        await msg.edit(payload);
         return;
       } catch(e) {
         lbMessageIds[period] = null;
@@ -208,10 +271,10 @@ async function updateLeaderboard(period) {
     const recent = await channel.messages.fetch({ limit: 20 });
     const existing = recent.find(m => m.author.id === discord.user.id);
     if (existing) {
-      await existing.edit(content);
+      await existing.edit(payload);
       lbMessageIds[period] = existing.id;
     } else {
-      const sent = await channel.send(content);
+      const sent = await channel.send(payload);
       lbMessageIds[period] = sent.id;
       try { await sent.pin(); } catch(e) {}
     }
@@ -225,6 +288,29 @@ async function updateAllLeaderboards() {
   await updateLeaderboard('weekly');
   await updateLeaderboard('monthly');
 }
+
+// ============================================================
+// BUTTON INTERACTIONS
+// ============================================================
+discord.on('interactionCreate', async (interaction) => {
+  if (!interaction.isButton()) return;
+  const { customId } = interaction;
+
+  if (!customId.startsWith('lb_')) return;
+
+  const [, action, period] = customId.split('_');
+
+  if (action === 'prev') {
+    lbOffsets[period] -= 1;
+  } else if (action === 'next') {
+    if (lbOffsets[period] < 0) lbOffsets[period] += 1;
+  } else if (action === 'live') {
+    lbOffsets[period] = 0;
+  }
+
+  await interaction.deferUpdate();
+  await updateLeaderboard(period, lbOffsets[period]);
+});
 
 // ============================================================
 // DB HELPERS
@@ -301,6 +387,7 @@ function scheduleMidnightReset() {
 
   setTimeout(async () => {
     console.log('🌙 Midnight reset');
+    lbOffsets = { daily: 0, weekly: 0, monthly: 0 }; // reset to live
     await updateAllLeaderboards();
     scheduleMidnightReset();
   }, ms);
@@ -327,7 +414,10 @@ discord.on('messageCreate', async (message) => {
   if (logged > 0) {
     const total = amounts.reduce((s, n) => s + n, 0);
     console.log(`✅ ${message.author.username}: ${logged} deal(s) — $${total.toLocaleString()}`);
-    await updateAllLeaderboards();
+    // Only update live leaderboards (offset 0)
+    if (lbOffsets.daily === 0) await updateLeaderboard('daily');
+    if (lbOffsets.weekly === 0) await updateLeaderboard('weekly');
+    if (lbOffsets.monthly === 0) await updateLeaderboard('monthly');
   }
 });
 
