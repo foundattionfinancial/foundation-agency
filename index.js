@@ -32,10 +32,10 @@ const DEAL_SIGNALS = [
   'gerber','nationwide','prudential','john hancock','pacific life',
   'paclife','aig','royal neighbors','security benefit','five star',
   'amam','siwl','giwl','sgiwl','gsiwl','freakos','freakohoes',
-  'frankos','moo','iul','rtd','lp','ap','term','whole life',
-  'max fund','select','uw','uwed','immediate','imm','approved',
+  'frankos','moo','iul','rtd',' lp ',' ap ','term ','whole life',
+  'max fund','select ','uw','uwed','immediate','imm ','approved',
   'submitted','issued','placed','inforce','graded','preferred',
-  'bob','ta','trans','tranz',
+  ' bob ',' ta ','trans ','tranz',
   '🐮','🦅','💜','💚','🏳️‍⚧️','🦠','🐣','🐥',
 ];
 
@@ -44,22 +44,26 @@ function hasDollarSign(content) {
 }
 
 function hasDealSignal(content) {
-  const lower = content.toLowerCase();
+  const lower = ' ' + content.toLowerCase() + ' ';
   return DEAL_SIGNALS.some(s => lower.includes(s));
 }
 
 function looksLikeADeal(content, amounts) {
   if (amounts.length === 0) return false;
-  // $ sign alone is enough — no carrier needed
   if (hasDollarSign(content)) return true;
   return hasDealSignal(content);
 }
 
+// ============================================================
+// PARSE AMOUNTS — fixed regex so $4500 = 4500, not 450
+// ============================================================
 function parseAllAmounts(content) {
   const found = new Set();
 
-  // Pass 1: $ or # before number
-  const reBefore = /[\$#]\s*([\d]{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)/g;
+  // Pass 1: $ or # IMMEDIATELY before number (no false sub-matches)
+  // Handles: $4500, $1,234.56, $ 324, #1318.68
+  // Key fix: use word boundary after number to avoid $4500 → 450
+  const reBefore = /[\$#]\s*(\d[\d,]*(?:\.\d{1,2})?)/g;
   let m;
   while ((m = reBefore.exec(content)) !== null) {
     const n = parseFloat(m[1].replace(/,/g, ''));
@@ -67,15 +71,17 @@ function parseAllAmounts(content) {
   }
 
   // Pass 2: number followed by $
-  const reAfter = /([\d]{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)\s*\$/g;
+  // Handles: 1200$, 2,186.64$
+  const reAfter = /(\d[\d,]*(?:\.\d{1,2})?)\s*\$/g;
   while ((m = reAfter.exec(content)) !== null) {
     const n = parseFloat(m[1].replace(/,/g, ''));
     if (valid(n)) found.add(n);
   }
 
   // Pass 3: no $ but has carrier — grab standalone numbers
+  // Handles: 1200 ethos, 3440 AMAM, 1,067.16 SIWL
   if (found.size === 0 && hasDealSignal(content)) {
-    const reStandalone = /(?<![.\d])([\d]{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d{3,}(?:\.\d{1,2})?)(?![.\d])/g;
+    const reStandalone = /(?<![.\d])(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d{3,}(?:\.\d{1,2})?)(?![.\d])/g;
     while ((m = reStandalone.exec(content)) !== null) {
       const n = parseFloat(m[1].replace(/,/g, ''));
       if (valid(n)) found.add(n);
@@ -92,19 +98,17 @@ function valid(n) {
 }
 
 // ============================================================
-// DATE RANGE — all times in UTC-based but use local day boundaries
+// DATE RANGE
 // ============================================================
 function getDateRange(period, offset = 0) {
   const now = new Date();
 
   if (period === 'daily') {
-    // Start = midnight of (today + offset)
     const start = new Date(now);
     start.setDate(start.getDate() + offset);
     start.setHours(0, 0, 0, 0);
     const end = new Date(start);
     end.setHours(23, 59, 59, 999);
-
     const isLive = offset === 0;
     const dateStr = start.toLocaleDateString('en-US', {
       weekday: 'long', month: 'long', day: 'numeric', year: 'numeric'
@@ -116,14 +120,12 @@ function getDateRange(period, offset = 0) {
   if (period === 'weekly') {
     const ref = new Date(now);
     ref.setDate(ref.getDate() + offset * 7);
-    // Go back to Sunday
     const start = new Date(ref);
-    start.setDate(start.getDate() - start.getDay());
+    start.setDate(start.getDate() - start.getDay()); // Sunday
     start.setHours(0, 0, 0, 0);
     const end = new Date(start);
     end.setDate(end.getDate() + 6);
     end.setHours(23, 59, 59, 999);
-
     const isLive = offset === 0;
     const startStr = start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
     const endStr = end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
@@ -134,7 +136,6 @@ function getDateRange(period, offset = 0) {
     const ref = new Date(now.getFullYear(), now.getMonth() + offset, 1);
     const start = new Date(ref.getFullYear(), ref.getMonth(), 1);
     const end = new Date(ref.getFullYear(), ref.getMonth() + 1, 0, 23, 59, 59, 999);
-
     const isLive = offset === 0;
     const label = start.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
     return { start, end, label, isLive };
@@ -142,7 +143,7 @@ function getDateRange(period, offset = 0) {
 }
 
 // ============================================================
-// CHECK IF PREVIOUS PERIOD HAS ANY DATA
+// CHECK IF PREVIOUS PERIOD HAS DATA
 // ============================================================
 async function hasPreviousData(period, offset) {
   const { start, end } = getDateRange(period, offset - 1);
@@ -151,11 +152,11 @@ async function hasPreviousData(period, offset) {
     .select('id', { count: 'exact', head: true })
     .gte('posted_at', start.toISOString())
     .lte('posted_at', end.toISOString());
-  return count > 0;
+  return (count || 0) > 0;
 }
 
 // ============================================================
-// BUILD LEADERBOARD
+// BUILD LEADERBOARD TEXT
 // ============================================================
 async function buildLeaderboard(period, offset = 0) {
   const { start, end, label, isLive } = getDateRange(period, offset);
@@ -176,11 +177,10 @@ async function buildLeaderboard(period, offset = 0) {
   });
 
   const periodTitle = { daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly' };
-  const liveTag = isLive ? ' 🟢' : '';
 
   if (Object.keys(map).length === 0) {
     return [
-      `🏆 __**Blueprint Top Producers**__ | ${periodTitle[period]}${liveTag}`,
+      `🏆 __**Blueprint Top Producers**__ | ${periodTitle[period]}`,
       `📅 ${label}`,
       ``,
       `*No deals posted yet — let's get it!* 💪`
@@ -210,7 +210,7 @@ async function buildLeaderboard(period, offset = 0) {
   const rankIcon = (i) => ['🥇','🥈','🥉'][i] || `${i + 1}.`;
 
   let lines = [];
-  lines.push(`🏆 __**Blueprint Top Producers**__ | ${periodTitle[period]}${liveTag}`);
+  lines.push(`🏆 __**Blueprint Top Producers**__ | ${periodTitle[period]}`);
   lines.push(`📅 ${label}`);
   lines.push(`**▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬**`);
 
@@ -231,13 +231,13 @@ async function buildLeaderboard(period, offset = 0) {
 }
 
 // ============================================================
-// BUILD BUTTONS — prev disabled if no data, next disabled if live
+// BUILD BUTTONS
 // ============================================================
 async function buildButtons(period, offset) {
   const isLive = offset === 0;
   const prevHasData = await hasPreviousData(period, offset);
 
-  const row = new ActionRowBuilder().addComponents(
+  return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`lb_prev_${period}`)
       .setLabel('◀ Previous')
@@ -249,7 +249,6 @@ async function buildButtons(period, offset) {
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(isLive),
   );
-  return row;
 }
 
 // ============================================================
@@ -274,7 +273,6 @@ async function updateLeaderboard(period, offset = null) {
     const components = [await buildButtons(period, offset)];
     const payload = { content, components };
 
-    // Try to edit existing message
     if (lbMessageIds[period]) {
       try {
         const msg = await channel.messages.fetch(lbMessageIds[period]);
@@ -285,7 +283,6 @@ async function updateLeaderboard(period, offset = null) {
       }
     }
 
-    // Search for existing bot message
     const recent = await channel.messages.fetch({ limit: 50 });
     const existing = recent.find(m => m.author.id === discord.user.id && m.components?.length > 0);
     if (existing) {
@@ -294,7 +291,6 @@ async function updateLeaderboard(period, offset = null) {
       return;
     }
 
-    // Post new
     const sent = await channel.send(payload);
     lbMessageIds[period] = sent.id;
     try { await sent.pin(); } catch(e) {}
@@ -335,11 +331,22 @@ discord.on('interactionCreate', async (interaction) => {
 // ============================================================
 async function upsertUser(message) {
   try {
+    let displayName = message.author.username;
+    let avatar = message.author.displayAvatarURL();
+    try {
+      // Fetch fresh member data to get server display name
+      const member = message.member || await message.guild?.members.fetch(message.author.id);
+      if (member) {
+        displayName = member.nickname || member.displayName || message.author.username;
+        avatar = member.displayAvatarURL() || message.author.displayAvatarURL();
+      }
+    } catch(e) { /* member fetch failed, use fallback */ }
+
     await supabase.from('users').upsert({
       discord_id: message.author.id,
       username: message.author.username,
-      display_name: message.member?.displayName || message.author.username,
-      avatar: message.author.displayAvatarURL(),
+      display_name: displayName,
+      avatar,
       updated_at: new Date().toISOString(),
     }, { onConflict: 'discord_id' });
   } catch(e) { console.error('upsertUser:', e.message); }
@@ -396,6 +403,58 @@ async function backfill(channel) {
 }
 
 // ============================================================
+// MESSAGE DELETE → remove deals + update leaderboards
+// ============================================================
+discord.on('messageDelete', async (message) => {
+  if (message.channelId !== DEAL_CHANNEL_ID) return;
+
+  const { error } = await supabase
+    .from('deals')
+    .delete()
+    .like('message_id', `${message.id}%`);
+
+  if (!error) {
+    console.log(`🗑️ Removed deals for deleted message ${message.id}`);
+    await Promise.all([
+      lbOffsets.daily   === 0 ? updateLeaderboard('daily')   : null,
+      lbOffsets.weekly  === 0 ? updateLeaderboard('weekly')  : null,
+      lbOffsets.monthly === 0 ? updateLeaderboard('monthly') : null,
+    ].filter(Boolean));
+  }
+});
+
+// ============================================================
+// MESSAGE EDIT → re-parse + update deals + leaderboards
+// ============================================================
+discord.on('messageUpdate', async (oldMessage, newMessage) => {
+  if (newMessage.channelId !== DEAL_CHANNEL_ID) return;
+  if (newMessage.author?.bot) return;
+
+  // Delete old deals for this message
+  await supabase
+    .from('deals')
+    .delete()
+    .like('message_id', `${newMessage.id}%`);
+
+  const content = newMessage.content || '';
+  const amounts = parseAllAmounts(content);
+
+  if (looksLikeADeal(content, amounts)) {
+    await upsertUser(newMessage);
+    const logged = await logDeals(newMessage, amounts);
+    if (logged > 0) {
+      console.log(`✏️ Re-logged ${logged} deal(s) for edited message ${newMessage.id}`);
+    }
+  }
+
+  await Promise.all([
+    lbOffsets.daily   === 0 ? updateLeaderboard('daily')   : null,
+    lbOffsets.weekly  === 0 ? updateLeaderboard('weekly')  : null,
+    lbOffsets.monthly === 0 ? updateLeaderboard('monthly') : null,
+  ].filter(Boolean));
+});
+
+// ============================================================
 // MIDNIGHT RESET
 // ============================================================
 function scheduleMidnightReset() {
@@ -437,12 +496,11 @@ discord.on('messageCreate', async (message) => {
   if (logged > 0) {
     const total = amounts.reduce((s, n) => s + n, 0);
     console.log(`✅ ${message.author.username}: ${logged} deal(s) — $${total.toLocaleString()}`);
-    // Update only live leaderboards
-    const updates = [];
-    if (lbOffsets.daily === 0)   updates.push(updateLeaderboard('daily'));
-    if (lbOffsets.weekly === 0)  updates.push(updateLeaderboard('weekly'));
-    if (lbOffsets.monthly === 0) updates.push(updateLeaderboard('monthly'));
-    await Promise.all(updates);
+    await Promise.all([
+      lbOffsets.daily   === 0 ? updateLeaderboard('daily')   : null,
+      lbOffsets.weekly  === 0 ? updateLeaderboard('weekly')  : null,
+      lbOffsets.monthly === 0 ? updateLeaderboard('monthly') : null,
+    ].filter(Boolean));
   }
 });
 
