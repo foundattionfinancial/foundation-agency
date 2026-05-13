@@ -54,15 +54,9 @@ function looksLikeADeal(content, amounts) {
   return hasDealSignal(content);
 }
 
-// ============================================================
-// PARSE AMOUNTS — fixed regex so $4500 = 4500, not 450
-// ============================================================
 function parseAllAmounts(content) {
   const found = new Set();
 
-  // Pass 1: $ or # IMMEDIATELY before number (no false sub-matches)
-  // Handles: $4500, $1,234.56, $ 324, #1318.68
-  // Key fix: use word boundary after number to avoid $4500 → 450
   const reBefore = /[\$#]\s*(\d[\d,]*(?:\.\d{1,2})?)/g;
   let m;
   while ((m = reBefore.exec(content)) !== null) {
@@ -70,16 +64,12 @@ function parseAllAmounts(content) {
     if (valid(n)) found.add(n);
   }
 
-  // Pass 2: number followed by $
-  // Handles: 1200$, 2,186.64$
   const reAfter = /(\d[\d,]*(?:\.\d{1,2})?)\s*\$/g;
   while ((m = reAfter.exec(content)) !== null) {
     const n = parseFloat(m[1].replace(/,/g, ''));
     if (valid(n)) found.add(n);
   }
 
-  // Pass 3: no $ but has carrier — grab standalone numbers
-  // Handles: 1200 ethos, 3440 AMAM, 1,067.16 SIWL
   if (found.size === 0 && hasDealSignal(content)) {
     const reStandalone = /(?<![.\d])(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d{3,}(?:\.\d{1,2})?)(?![.\d])/g;
     while ((m = reStandalone.exec(content)) !== null) {
@@ -121,7 +111,7 @@ function getDateRange(period, offset = 0) {
     const ref = new Date(now);
     ref.setDate(ref.getDate() + offset * 7);
     const start = new Date(ref);
-    start.setDate(start.getDate() - start.getDay()); // Sunday
+    start.setDate(start.getDate() - start.getDay());
     start.setHours(0, 0, 0, 0);
     const end = new Date(start);
     end.setDate(end.getDate() + 6);
@@ -161,24 +151,25 @@ async function hasPreviousData(period, offset) {
 async function buildLeaderboard(period, offset = 0) {
   const { start, end, label, isLive } = getDateRange(period, offset);
 
-  const { data: deals, error } = await supabase
-    .from('deals')
-    .select('discord_id, amount')
-    .gte('posted_at', start.toISOString())
-    .lte('posted_at', end.toISOString());
+  // Paginate to get ALL deals (Supabase caps at 1000 per query)
+  let allDeals = [];
+  let from = 0;
+  const PAGE_SIZE = 1000;
+  while (true) {
+    const { data, error } = await supabase
+      .from('deals')
+      .select('discord_id, amount')
+      .gte('posted_at', start.toISOString())
+      .lte('posted_at', end.toISOString())
+      .range(from, from + PAGE_SIZE - 1);
+    if (error || !data || data.length === 0) break;
+    allDeals = allDeals.concat(data);
+    if (data.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
 
-  if (error || !deals) return null;
-
-  const map = {};
-  deals.forEach(d => {
-    if (!map[d.discord_id]) map[d.discord_id] = { total: 0, count: 0 };
-    map[d.discord_id].total += parseFloat(d.amount);
-    map[d.discord_id].count++;
-  });
-
-  const periodTitle = { daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly' };
-
-  if (Object.keys(map).length === 0) {
+  if (allDeals.length === 0) {
+    const periodTitle = { daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly' };
     return [
       `🏆 __**Blueprint Top Producers**__ | ${periodTitle[period]}`,
       `📅 ${label}`,
@@ -186,6 +177,15 @@ async function buildLeaderboard(period, offset = 0) {
       `*No deals posted yet — let's get it!* 💪`
     ].join('\n');
   }
+
+  const map = {};
+  allDeals.forEach(d => {
+    if (!map[d.discord_id]) map[d.discord_id] = { total: 0, count: 0 };
+    map[d.discord_id].total += parseFloat(d.amount);
+    map[d.discord_id].count++;
+  });
+
+  const periodTitle = { daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly' };
 
   const ids = Object.keys(map);
   const { data: users } = await supabase
@@ -196,16 +196,20 @@ async function buildLeaderboard(period, offset = 0) {
   const userMap = {};
   (users || []).forEach(u => userMap[u.discord_id] = u.display_name);
 
-  const sorted = Object.entries(map)
+  // All agents sorted — used for accurate totals
+  const allAgents = Object.entries(map)
     .map(([id, stats]) => ({
       id, ...stats,
       name: userMap[id] || 'Unknown'
     }))
-    .sort((a, b) => b.total - a.total)
-    .slice(0, 25);
+    .sort((a, b) => b.total - a.total);
 
-  const agencyTotal = sorted.reduce((s, u) => s + u.total, 0);
-  const agencyDeals = sorted.reduce((s, u) => s + u.count, 0);
+  // Top 25 for display only
+  const sorted = allAgents.slice(0, 25);
+
+  // Totals from ALL agents — not just top 25
+  const agencyTotal = allAgents.reduce((s, u) => s + u.total, 0);
+  const agencyDeals = allAgents.reduce((s, u) => s + u.count, 0);
 
   const rankIcon = (i) => ['👑','🥈','🥉'][i] || `${i + 1}.`;
 
@@ -334,13 +338,12 @@ async function upsertUser(message) {
     let displayName = message.author.username;
     let avatar = message.author.displayAvatarURL();
     try {
-      // Fetch fresh member data to get server display name
       const member = message.member || await message.guild?.members.fetch(message.author.id);
       if (member) {
         displayName = member.nickname || member.displayName || message.author.username;
         avatar = member.displayAvatarURL() || message.author.displayAvatarURL();
       }
-    } catch(e) { /* member fetch failed, use fallback */ }
+    } catch(e) {}
 
     await supabase.from('users').upsert({
       discord_id: message.author.id,
@@ -403,7 +406,7 @@ async function backfill(channel) {
 }
 
 // ============================================================
-// MESSAGE DELETE → remove deals + update leaderboards
+// MESSAGE DELETE
 // ============================================================
 discord.on('messageDelete', async (message) => {
   if (message.channelId !== DEAL_CHANNEL_ID) return;
@@ -424,13 +427,12 @@ discord.on('messageDelete', async (message) => {
 });
 
 // ============================================================
-// MESSAGE EDIT → re-parse + update deals + leaderboards
+// MESSAGE EDIT
 // ============================================================
 discord.on('messageUpdate', async (oldMessage, newMessage) => {
   if (newMessage.channelId !== DEAL_CHANNEL_ID) return;
   if (newMessage.author?.bot) return;
 
-  // Delete old deals for this message
   await supabase
     .from('deals')
     .delete()
