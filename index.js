@@ -22,7 +22,7 @@ function parseAllAmounts(content) {
   while ((match = regex.exec(content)) !== null) {
     const raw = match[1].replace(/,/g, '');
     const num = parseFloat(raw);
-    if (!isNaN(num) && num >= 100 && num <= 50000 && !(num >= 2020 && num <= 2030)) {
+    if (!isNaN(num) && num >= 100 && num <= 50000) {
       amounts.push(num);
     }
   }
