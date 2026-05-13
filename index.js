@@ -207,7 +207,7 @@ async function buildLeaderboard(period, offset = 0) {
   const agencyTotal = sorted.reduce((s, u) => s + u.total, 0);
   const agencyDeals = sorted.reduce((s, u) => s + u.count, 0);
 
-  const rankIcon = (i) => ['🥇','🥈','🥉'][i] || `${i + 1}.`;
+  const rankIcon = (i) => ['👑','🥈','🥉'][i] || `${i + 1}.`;
 
   let lines = [];
   lines.push(`🏆 __**Blueprint Top Producers**__ | ${periodTitle[period]}`);
