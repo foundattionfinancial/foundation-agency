@@ -326,8 +326,18 @@ discord.on('interactionCreate', async (interaction) => {
   if (action === 'prev') lbOffsets[period] -= 1;
   if (action === 'next' && lbOffsets[period] < 0) lbOffsets[period] += 1;
 
-  await interaction.deferUpdate();
-  await updateLeaderboard(period, lbOffsets[period]);
+  try {
+    await interaction.deferUpdate();
+  } catch(e) {
+    // Interaction expired (>3s) — just update leaderboard silently
+    console.log(`⚠️ Interaction expired for ${customId} — updating anyway`);
+  }
+
+  try {
+    await updateLeaderboard(period, lbOffsets[period]);
+  } catch(e) {
+    console.error(`LB update error:`, e.message);
+  }
 });
 
 // ============================================================
