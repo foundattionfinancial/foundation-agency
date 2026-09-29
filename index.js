@@ -54,9 +54,35 @@ function looksLikeADeal(content, amounts) {
   return hasDealSignal(content);
 }
 
+// Amount range check only — NO year filtering here.
+// $2,027 / $2,028 / 2027$ are real deals and must count.
+function valid(n) {
+  if (isNaN(n) || n < 100 || n > 50000) return false;
+  return true;
+}
+
+// Only used for bare numbers (no $ or #). Returns true when the
+// number is clearly a date/year, e.g. 1/15/2027, 2027-01-15,
+// Jan 5 2027, "in 2027", "eff 2027".
+function looksLikeYear(content, index, raw) {
+  if (raw.includes(',') || raw.includes('.')) return false; // "2,027" is money
+  const n = parseInt(raw, 10);
+  if (n < 2020 || n > 2035) return false;
+
+  const before = content.slice(Math.max(0, index - 20), index).toLowerCase();
+  const after  = content.slice(index + raw.length, index + raw.length + 3);
+
+  if (/[\/\-]\s*$/.test(before)) return true;   // 1/15/2027, 01-15-2027
+  if (/^\s*[\/\-]\d/.test(after)) return true;  // 2027-01-15, 2027/01
+  if (/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*(\d{1,2}(st|nd|rd|th)?)?,?\s*$/.test(before)) return true;
+  if (/\b(in|of|by|year|yr|since|until|til|thru|through|eff|effective|dated?)\s*$/.test(before)) return true;
+  return false;
+}
+
 function parseAllAmounts(content) {
   const found = new Set();
 
+  // $2,027 / #2028 — explicit money, always counted
   const reBefore = /[\$#]\s*(\d[\d,]*(?:\.\d{1,2})?)/g;
   let m;
   while ((m = reBefore.exec(content)) !== null) {
@@ -64,27 +90,25 @@ function parseAllAmounts(content) {
     if (valid(n)) found.add(n);
   }
 
+  // 2027$ — explicit money, always counted
   const reAfter = /(\d[\d,]*(?:\.\d{1,2})?)\s*\$/g;
   while ((m = reAfter.exec(content)) !== null) {
     const n = parseFloat(m[1].replace(/,/g, ''));
     if (valid(n)) found.add(n);
   }
 
+  // Bare numbers — only when a deal signal exists; skip obvious dates
   if (found.size === 0 && hasDealSignal(content)) {
     const reStandalone = /(?<![.\d])(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d{3,}(?:\.\d{1,2})?)(?![.\d])/g;
     while ((m = reStandalone.exec(content)) !== null) {
-      const n = parseFloat(m[1].replace(/,/g, ''));
+      const raw = m[1];
+      if (looksLikeYear(content, m.index, raw)) continue;
+      const n = parseFloat(raw.replace(/,/g, ''));
       if (valid(n)) found.add(n);
     }
   }
 
   return [...found];
-}
-
-function valid(n) {
-  if (isNaN(n) || n < 100 || n > 50000) return false;
-  if (Number.isInteger(n) && n >= 2020 && n <= 2030) return false;
-  return true;
 }
 
 // ============================================================
@@ -329,7 +353,6 @@ discord.on('interactionCreate', async (interaction) => {
   try {
     await interaction.deferUpdate();
   } catch(e) {
-    // Interaction expired (>3s) — just update leaderboard silently
     console.log(`⚠️ Interaction expired for ${customId} — updating anyway`);
   }
 
